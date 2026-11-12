@@ -18,9 +18,9 @@
 ## 硬件原材料
 
 1. **主机（两款任选其一）**
-   - **M5Stack CoreS3** — 大屏同时显示电流和电压，可查看记录数、网络地址和清空确认提示。
-   - **M5Stack AtomS3R** — 128 × 128 小屏用绿色大字显示电流，下方用蓝字显示电压，并显示日期时间、记录数和网络信息。
-2. **外设配件** — M5Stack Unit INA226-1A 测量模块，用于采集直流电流和电压。
+   - **[M5Stack CoreS3](https://docs.m5stack.com/en/core/CoreS3)** — 大屏同时显示电流和电压，可查看记录数、网络地址和清空确认提示。
+   - **[M5Stack AtomS3R](https://docs.m5stack.com/en/core/AtomS3R)** — 128 × 128 小屏用绿色大字显示电流，下方用蓝字显示电压，并显示日期时间、记录数和网络信息。
+2. **外设配件** — [M5Stack Unit INA226-1A](https://docs.m5stack.com/en/unit/Unit_INA226-1A) 测量模块，用于采集直流电流和电压。
 
 ## 网页界面
 
@@ -66,9 +66,3 @@ CoreS3 使用侧面的电源键，AtomS3R 使用屏下按键。
 3. 点「上传并升级」，等待校验和自动重启。重新打开网页即可查看版本。
 
 升级会保留 Wi-Fi 配置，测量历史从新一轮开始。需要保留旧记录时，可在升级前先导出 CSV。
-
-## M5Stack 官方产品介绍
-
-- [M5Stack CoreS3](https://docs.m5stack.com/en/core/CoreS3)
-- [M5Stack AtomS3R](https://docs.m5stack.com/en/core/AtomS3R)
-- [M5Stack Unit INA226-1A](https://docs.m5stack.com/en/unit/Unit_INA226-1A)
