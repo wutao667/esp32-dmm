@@ -60,6 +60,8 @@ void meterWebTask(void* log)
     WiFi.setAutoReconnect(true);
 
     WebServer server(80);
+    const char* actionHeaders[] = {"X-Meter-Action"};
+    server.collectHeaders(actionHeaders, 1);
     server.on("/", HTTP_GET, [&] {
         server.send_P(200, "text/html; charset=utf-8", kMeterPage, sizeof(kMeterPage) - 1);
     });
@@ -74,6 +76,18 @@ void meterWebTask(void* log)
         char json[96];
         snprintf(json, sizeof(json), "{\"microamps\":%.6f,\"volts\":%.6f}", microamps, volts);
         server.send(200, "application/json", json);
+    });
+    server.on("/api/log/clear", HTTP_POST, [&] {
+        server.sendHeader("Cache-Control", "no-store");
+        if (server.header("X-Meter-Action") != "clear-history") {
+            server.send(403, "text/plain", "Confirmation required");
+            return;
+        }
+        if (!meterClearHistory()) {
+            server.send(503, "text/plain", "Clear could not be confirmed");
+            return;
+        }
+        server.send(204, "text/plain", "");
     });
     server.on("/api/log", HTTP_GET, [&] {
         const long requested = server.hasArg("limit") ? server.arg("limit").toInt() : 900;

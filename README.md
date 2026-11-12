@@ -40,4 +40,6 @@ CoreS3 连上已配置的 Wi-Fi 后，屏幕底部依次显示网络名称和路
 
 「导出当前页 CSV」下载曲线当前显示的记录。「导出全部历史 CSV」下载点击时 Flash 中已保存的所有记录。CSV 四列依次为日期、时间、电流（µA）、电压（V）。已校时记录使用浏览器时区，未校时记录的日期留空，时间显示为开机后的时长。
 
+网页上点「清空历史」，再在对话框点「确认清空」，可删除设备上的全部测量记录。清空后设备会继续记录。
+
 [CoreS3 引脚表](https://docs.m5stack.com/en/core/CoreS3) · [Unit INA226-1A 文档](https://docs.m5stack.com/en/unit/Unit_INA226-1A) · [INA226 数据手册](https://www.ti.com/lit/ds/symlink/ina226.pdf)

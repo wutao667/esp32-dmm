@@ -4,7 +4,7 @@ constexpr char kMeterPage[] PROGMEM = R"HTML(<!doctype html>
 <html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CoreS3 测量记录</title>
+<title>M5小型电流计</title>
 <style>
   :root {color-scheme:dark; font:15px system-ui,sans-serif; background:#0b111a; color:#e7eef8}
   * {box-sizing:border-box}
@@ -19,6 +19,11 @@ constexpr char kMeterPage[] PROGMEM = R"HTML(<!doctype html>
     border-radius:7px; padding:8px 12px; min-height:40px}
   button:not(:disabled) {cursor:pointer}
   button:disabled {opacity:.45}
+  .danger {color:#ffc1b4; border-color:#a65f59}
+  dialog {width:min(420px,calc(100vw - 32px)); background:#182638; color:#e7eef8;
+    border:1px solid #3e526a; border-radius:12px; padding:20px}
+  dialog::backdrop {background:#0009}
+  dialog form {display:flex; justify-content:flex-end; gap:8px; margin-top:18px}
   .stats {display:grid; grid-template-columns:repeat(auto-fit,minmax(255px,1fr)); gap:12px;
     margin-top:12px}
   .stats article {background:#121e2d; border:1px solid #2c3e53; border-radius:12px; padding:14px}
@@ -36,7 +41,7 @@ constexpr char kMeterPage[] PROGMEM = R"HTML(<!doctype html>
   .error {color:#ffb596}
 </style>
 <main>
-  <header><h1>CoreS3 测量记录</h1><span class="muted" id="count"></span></header>
+  <header><h1>M5小型电流计</h1><span class="muted" id="count"></span></header>
   <nav aria-label="记录范围">
     <label for="limit">显示</label>
     <select id="limit"><option value="300">300 条</option><option value="900" selected>900 条</option>
@@ -45,9 +50,19 @@ constexpr char kMeterPage[] PROGMEM = R"HTML(<!doctype html>
     <button id="latest">回到最新</button>
     <button id="exportPage" disabled>导出当前页 CSV</button>
     <button id="exportAll" disabled>导出全部历史 CSV</button>
+    <button id="clearHistory" class="danger" disabled>清空历史</button>
   </nav>
+  <dialog id="clearDialog" aria-labelledby="clearTitle">
+    <h2 id="clearTitle">确认清空历史？</h2>
+    <p>此操作会删除 CoreS3 上已保存的全部测量记录。清空后设备会继续记录。</p>
+    <form method="dialog">
+      <button value="cancel" autofocus>取消</button>
+      <button value="clear" class="danger">确认清空</button>
+    </form>
+  </dialog>
   <div id="status" class="muted" role="status">正在读取 Flash…</div>
   <div id="exportStatus" class="muted" role="status"></div>
+  <div id="clearStatus" class="muted" role="status"></div>
   <section class="stats" aria-label="测量统计">
     <article><header><h2>最新值</h2><time id="liveUpdated" class="muted"></time></header>
       <dl><div><dt>电流</dt><dd class="mean-current" id="liveCurrent">—</dd></div>
@@ -81,6 +96,7 @@ const plots = [[$('currentChart'), 'microamps', '#70e3b7'], [$('voltageChart'), 
 let rows = [], start = 0, total = 0, wanted = null, version = 0, pending = false;
 let selected = -1;
 let exporting = false;
+let clearing = false;
 const limit = () => Number($('limit').value);
 const margin = {left:64, right:12, top:9, bottom:28};
 
@@ -163,6 +179,7 @@ function showPage(page) {
   $('next').disabled = start+rows.length >= total;
   $('exportPage').disabled = exporting || rows.length === 0;
   $('exportAll').disabled = exporting || total === 0;
+  $('clearHistory').disabled = clearing || exporting || total === 0;
   $('allSamples').textContent = total.toLocaleString() + ' 条';
   $('pageSamples').textContent = rows.length.toLocaleString() + ' 条';
   $('allCurrent').textContent = formatCurrent(page.meanCurrent);
@@ -252,6 +269,7 @@ $('exportAll').onclick = async () => {
   exporting = true;
   $('exportAll').disabled = true;
   $('exportPage').disabled = true;
+  $('clearHistory').disabled = true;
   exportStatus('正在读取全部历史…');
   const parts = [csvHeader];
   try {
@@ -276,8 +294,39 @@ $('exportAll').onclick = async () => {
     exporting = false;
     $('exportAll').disabled = total === 0;
     $('exportPage').disabled = rows.length === 0;
+    $('clearHistory').disabled = clearing || total === 0;
   }
 };
+$('clearHistory').onclick = () => {
+  const dialog = $('clearDialog');
+  dialog.returnValue = 'cancel';
+  dialog.showModal();
+};
+$('clearDialog').addEventListener('close',async () => {
+  if ($('clearDialog').returnValue !== 'clear' || clearing || exporting) return;
+  clearing = true;
+  $('clearHistory').disabled = true;
+  const message = $('clearStatus');
+  message.className = 'muted';
+  message.textContent = '正在清空历史…';
+  try {
+    const response = await fetch('/api/log/clear',{
+      method:'POST', headers:{'X-Meter-Action':'clear-history'}, signal:AbortSignal.timeout(6000)
+    });
+    if (response.status !== 204) throw new Error('HTTP ' + response.status);
+    rows = [];
+    total = start = 0;
+    showPage({meanCurrent:NaN,meanVoltage:NaN});
+    message.textContent = '历史已清空，设备正在记录新数据。';
+    navigate(null);
+  } catch (error) {
+    message.className = 'error';
+    message.textContent = '未能确认清空结果 · ' + error.message;
+  } finally {
+    clearing = false;
+    $('clearHistory').disabled = exporting || total === 0;
+  }
+});
 function navigate(index) {
   wanted = index;
   ++version;
@@ -302,7 +351,7 @@ plots.forEach(([canvas]) => canvas.addEventListener('pointermove', e => {
   redraw();
 }));
 addEventListener('resize',redraw);
-setInterval(() => { if (wanted === null && !exporting) load(); },4000);
+setInterval(() => { if (wanted === null && !exporting && !clearing) load(); },4000);
 async function updateLive() {
   let latest = null;
   try {

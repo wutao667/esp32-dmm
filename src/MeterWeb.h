@@ -8,4 +8,5 @@ String meterWifiName();
 bool meterWifiSetupActive();
 void meterRequestWifiReset();
 bool meterLiveReading(float& microamps, float& volts);
+bool meterClearHistory();
 void meterWebTask(void* log);

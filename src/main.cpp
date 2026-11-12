@@ -50,6 +50,8 @@ QueueHandle_t pendingRecords;
 QueueHandle_t serialMessages;
 FlashLog flashLog;
 uint32_t confirmUntil = 0;
+enum class ClearRequest { Idle, Pending, Working, Succeeded, Failed };
+std::atomic<ClearRequest> webClear{ClearRequest::Idle};
 constexpr time_t kEarliestUtc = 1577836800;  // 2020-01-01
 std::atomic<uint32_t> utcAtBoot{0};
 
@@ -272,23 +274,32 @@ void displayTask(void*)
         const bool clearTouched = touch.wasPressed() &&
             touch.x >= right - kClearWidth && touch.x < right &&
             touch.y >= kClearTop && touch.y < kClearTop + kClearHeight;
+        bool clearConfirmed = false;
         if (M5.BtnPWR.wasHold()) {
             confirmUntil = 0;
             meterRequestWifiReset();
             nextRefresh = now;
         } else if (clearTouched || M5.BtnPWR.wasClicked()) {
-            if (confirmUntil) {
-                flashLog.clear();
-                recordFromSecond = uptimeSeconds() + 1;
-                confirmUntil = 0;
-                sendDiagnostic("LOG clear count=%lu\n", static_cast<unsigned long>(flashLog.count));
-            } else {
-                confirmUntil = now + 5000;
-            }
+            clearConfirmed = confirmUntil != 0;
+            confirmUntil = clearConfirmed ? 0 : now + 5000;
             nextRefresh = now;
         } else if (touch.wasPressed() && confirmUntil) {
             confirmUntil = 0;
             nextRefresh = now;
+        }
+        auto pendingClear = ClearRequest::Pending;
+        const bool clearFromWeb = webClear.compare_exchange_strong(pendingClear, ClearRequest::Working);
+        if (clearConfirmed || clearFromWeb) {
+            const bool cleared = flashLog.clear();
+            if (cleared) {
+                recordFromSecond = uptimeSeconds() + 1;
+                sendDiagnostic("LOG clear count=%lu\n", static_cast<unsigned long>(flashLog.count));
+            }
+            confirmUntil = 0;
+            nextRefresh = now;
+            if (clearFromWeb) {
+                webClear.store(cleared ? ClearRequest::Succeeded : ClearRequest::Failed);
+            }
         }
 
         PendingRecord pending;
@@ -333,6 +344,25 @@ void displayTask(void*)
     }
 }
 }  // namespace
+
+bool meterClearHistory()
+{
+    if (webClear.load() == ClearRequest::Working) {
+        return false;
+    }
+    webClear.store(ClearRequest::Pending);
+    const uint32_t start = millis();
+    while (millis() - start < 4000) {
+        const auto state = webClear.load();
+        if (state == ClearRequest::Succeeded || state == ClearRequest::Failed) {
+            return state == ClearRequest::Succeeded;
+        }
+        delay(10);
+    }
+    auto pending = ClearRequest::Pending;
+    webClear.compare_exchange_strong(pending, ClearRequest::Idle);
+    return false;
+}
 
 bool meterLiveReading(float& microamps, float& volts)
 {

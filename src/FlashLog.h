@@ -64,11 +64,11 @@ public:
         currentSum += record.microamps;
     }
 
-    void clear()
+    bool clear()
     {
         const std::lock_guard<std::mutex> lock(mutex);
         if (!mounted) {
-            return;
+            return false;
         }
         if (file) {
             fclose(file);
@@ -76,11 +76,12 @@ public:
         }
         if (LittleFS.exists("/meter-v1.bin") && !LittleFS.remove("/meter-v1.bin")) {
             state = State::Error;
-            return;
+            return false;
         }
         count = 0;
         voltageSum = currentSum = 0;
         open();
+        return totalsValid;
     }
 
     bool readPage(size_t& start, LogTotals& totals, LogRecord* output, size_t& length)
