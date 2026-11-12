@@ -2,6 +2,11 @@
 
 用 M5Stack 小屏随时查看直流电流和电压。想知道设备什么时候开始耗电、待机电流有多大，或者一段时间内电流怎么变化，可以在手机上打开电流计网页，看曲线、看平均值，也可以导出数据。
 
+<p>
+  <img src="docs/images/atoms3r-meter.jpg" alt="AtomS3R 与 INA226 测量模块的实物照片" width="300">
+  <img src="docs/images/atoms3r-display.png" alt="AtomS3R 屏幕特写，显示电流、电压、记录数和网络信息" width="280">
+</p>
+
 ## 能做什么
 
 - **现场读数** — 小屏直接显示电流和电压。接上网络后，屏幕还会显示 Wi-Fi 名称和网页 IP。
@@ -19,6 +24,8 @@
 
 两款机型共用「ESP32 DMM电流计」网页，手机和电脑都可以查看。
 
+![测量网页，显示最新值、平均值、电流和电压曲线，以及 CSV 导出和固件升级入口](docs/images/meter-dashboard.png)
+
 ## 电流档位
 
 | 档位 | 对应的分流电阻 | 电流单位 |
@@ -34,6 +41,8 @@
 1. **接上测量模块。** CoreS3 使用 Port B，AtomS3R 使用 Grove 口。被测直流电源接到 INA226 模块的 `INPUT`，负载接到 `OUTPUT`，按模块标记接正负极。
 2. **给电流计配网。** 手机连接屏幕上显示的免密码热点 `Esp32DMM-XXXX`。配网页没自动弹出时，打开 [192.168.4.1](http://192.168.4.1/)。点 **Configure WiFi**，选择 2.4 GHz 网络并保存。
 3. **打开测量网页。** 手机或电脑连上同一网络，在浏览器输入电流计屏幕上显示的 IP。可轻触曲线查看某个时刻的读数，也可以翻看更早的记录。
+
+<img src="docs/images/wifi-setup-mobile.png" alt="手机上的 Wi-Fi 配网页，点击 Configure WiFi 选择网络" width="300">
 
 ## 按键怎么用
 
