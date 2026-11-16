@@ -5,6 +5,7 @@
 <p>
   <img src="docs/images/atoms3r-meter.jpg" alt="AtomS3R 与 INA226 测量模块的实物照片" width="300">
   <img src="docs/images/atoms3r-display.png" alt="AtomS3R 屏幕特写，显示电流、电压、记录数和网络信息" width="280">
+  <img src="docs/images/sticks3-display.png" alt="StickS3 竖屏实拍，显示实时电流、电压、历史平均值和电量" width="200">
 </p>
 
 ## 能做什么
@@ -22,8 +23,6 @@
    - **[M5Stack CoreS3](https://docs.m5stack.com/en/core/CoreS3)** — 大屏同时显示电流和电压，可查看记录数、网络地址和清空确认提示。
    - **[M5Stack AtomS3R](https://docs.m5stack.com/en/core/AtomS3R)** — 128 × 128 小屏用绿色大字显示电流，下方用蓝字显示电压，并显示日期时间、记录数和网络信息。
 2. **外设配件** — [M5Stack Unit INA226-1A](https://docs.m5stack.com/en/unit/Unit_INA226-1A) 测量模块，用于采集直流电流和电压。
-
-<img src="docs/images/sticks3-display.png" alt="StickS3 竖屏实拍，显示实时电流、电压、历史平均值和电量" width="280">
 
 ## 网页界面
 
