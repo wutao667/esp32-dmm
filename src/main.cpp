@@ -5,12 +5,14 @@
 #include <sys/time.h>
 #include <atomic>
 #include <cstdarg>
+#include "BoardConfig.h"
+#include "BoardUi.h"
+#include "CurrentRange.h"
 #include "FlashLog.h"
 #include "MeterWeb.h"
+#include "MeterOta.h"
 
 namespace {
-constexpr int kSda = 9;
-constexpr int kScl = 8;
 constexpr uint8_t kAddress = 0x41;
 constexpr uint8_t kConfigRegister = 0x00;
 constexpr uint8_t kShuntVoltageRegister = 0x01;
@@ -19,23 +21,9 @@ constexpr uint8_t kMaskEnableRegister = 0x06;
 constexpr uint16_t kConversionReady = 1u << 3;
 // Continuous shunt and bus conversion, 1.1 ms per channel, 16-sample averaging.
 constexpr uint16_t kConfig = 0x4527;
-constexpr float kShuntOhms = 10.0f;
-constexpr float kShuntMicrovoltsPerCount = 2.5f;
 constexpr uint32_t kDisplayUpdateMs = 200;
-constexpr int kScreenInset = 20;
-constexpr int kPanelPadding = 12;
-constexpr int kClearWidth = 92;
-constexpr int kClearTop = 3;
-constexpr int kClearHeight = 28;
-
-constexpr uint16_t kBackground = 0x0842;
-constexpr uint16_t kPanel = 0x1126;
 constexpr uint16_t kMuted = 0xB638;
-constexpr uint16_t kVoltageColor = 0x6EBF;
 constexpr uint16_t kCurrentColor = 0x67D5;
-
-M5Canvas frame(&M5.Display);
-bool bufferedDisplay = false;
 
 enum class MeterStatus { Connecting, Live, RangeLimit, SensorError };
 
@@ -43,6 +31,7 @@ struct Reading {
     float volts = 0;
     float microamps = 0;
     MeterStatus status = MeterStatus::Connecting;
+    uint8_t range = 0;
 };
 
 QueueHandle_t latestReading;
@@ -89,6 +78,14 @@ uint32_t uptimeSeconds()
     return esp_timer_get_time() / 1000000;
 }
 
+void captureClock()
+{
+    const time_t utc = time(nullptr);
+    if (utc >= kEarliestUtc) {
+        utcAtBoot.store(static_cast<uint32_t>(utc) - uptimeSeconds());
+    }
+}
+
 void serviceSerialCommand()
 {
     static char command[32];
@@ -101,6 +98,10 @@ void serviceSerialCommand()
             if (strcmp(command, "IP") == 0) {
                 const uint32_t address = meterWebAddress();
                 sendDiagnostic("WEB %s\n", IPAddress(address).toString().c_str());
+            } else if (strcmp(command, "LOG") == 0) {
+                sendDiagnostic("LOG state=%d count=%lu %s\n", static_cast<int>(flashLog.state),
+                               static_cast<unsigned long>(flashLog.count),
+                               flashLog.state == FlashLog::State::Error ? flashLog.errorDetail() : "");
             } else if (strcmp(command, "WIFI RESET") == 0) {
                 meterRequestWifiReset();
             } else if (strncmp(command, "TIME ", 5) == 0) {
@@ -109,10 +110,12 @@ void serviceSerialCommand()
                     const timeval now{epoch, 0};
                     settimeofday(&now, nullptr);
                     utcAtBoot.store(static_cast<uint32_t>(epoch) - uptimeSeconds());
-                    const time_t seconds = epoch;
-                    tm utc{};
-                    gmtime_r(&seconds, &utc);
-                    M5.Rtc.setDateTime(&utc);
+                    if (BoardConfig::hasRtc && M5.Rtc.isEnabled()) {
+                        const time_t seconds = epoch;
+                        tm utc{};
+                        gmtime_r(&seconds, &utc);
+                        M5.Rtc.setDateTime(&utc);
+                    }
                     sendDiagnostic("TIME OK %ld\n", epoch);
                 }
             }
@@ -130,6 +133,7 @@ void recordSample(const Reading* reading = nullptr)
     static float voltageSum = 0;
     static float currentSum = 0;
     static unsigned samples = 0;
+    static uint8_t sampleRange = 0;
     const int64_t elapsedUs = esp_timer_get_time();
     const uint32_t now = elapsedUs / 1000000;
     if (now != second) {
@@ -145,8 +149,13 @@ void recordSample(const Reading* reading = nullptr)
         voltageSum = currentSum = 0;
     }
     if (reading) {
+        if (samples && reading->range != sampleRange) {
+            samples = 0;
+            voltageSum = currentSum = 0;
+        }
         if (!samples) {
             timestamp = utcAtBoot.load() + second;
+            sampleRange = reading->range;
         }
         voltageSum += reading->volts;
         currentSum += reading->microamps;
@@ -177,113 +186,57 @@ bool readRegister(uint8_t reg, uint16_t& value)
     return true;
 }
 
-void drawReading(m5gfx::LovyanGFX& display, int y, const char* label,
-                 const char* value, const char* unit, uint16_t color)
-{
-    const int panelWidth = display.width() - 2 * kScreenInset;
-    const int textLeft = kScreenInset + kPanelPadding;
-    const int textRight = display.width() - textLeft;
-    display.fillRoundRect(kScreenInset, y, panelWidth, 76, 9, kPanel);
-    display.setFont(&fonts::Font2);
-    display.setTextColor(kMuted);
-    display.drawString(label, textLeft, y + 7);
-    display.drawRightString(unit, textRight, y + 7);
-    display.setFont(&fonts::FreeMonoBold24pt7b);
-    display.setTextColor(color);
-    const int valueWidth = display.textWidth(value);
-    const int availableWidth = textRight - textLeft;
-    if (valueWidth > availableWidth) {
-        display.setTextSize(static_cast<float>(availableWidth) / valueWidth, 1);
-    }
-    display.drawString(value, textLeft, y + 25);
-    display.setTextSize(1);
-}
-
-void showReadings(const char* voltage, const char* current,
-                  const char* status, uint16_t statusColor)
-{
-    m5gfx::LovyanGFX& display = bufferedDisplay
-        ? static_cast<m5gfx::LovyanGFX&>(frame)
-        : static_cast<m5gfx::LovyanGFX&>(M5.Display);
-    display.startWrite();
-    display.fillScreen(kBackground);
-    display.setTextSize(1);
-    display.setFont(&fonts::Font2);
-    display.setTextColor(TFT_WHITE);
-    const int right = display.width() - kScreenInset;
-    const int clearLeft = right - kClearWidth;
-    display.drawString(confirmUntil ? "Delete all records?" : "INA226  /  DC METER",
-                       kScreenInset, 10);
-    display.fillRoundRect(clearLeft, kClearTop, kClearWidth, kClearHeight, 5,
-                          confirmUntil ? TFT_RED : kPanel);
-    display.drawCenterString(confirmUntil ? "CONFIRM" : "CLEAR", clearLeft + kClearWidth / 2, 9);
-    drawReading(display, 34, "BUS VOLTAGE", voltage, "V", kVoltageColor);
-    drawReading(display, 118, "CURRENT", current, "uA", kCurrentColor);
-    display.setFont(&fonts::Font2);
-    char count[24];
-    snprintf(count, sizeof(count), "REC %lu", static_cast<unsigned long>(flashLog.count));
-    display.setTextColor(flashLog.state == FlashLog::State::Ready ? kCurrentColor : TFT_ORANGE);
-    display.drawRightString(count, right, 200);
-    const int statusWidth = right - display.textWidth(count) - 12 - kScreenInset;
-    const int fullStatusWidth = display.textWidth(status);
-    if (fullStatusWidth > statusWidth) {
-        display.setTextSize(static_cast<float>(statusWidth) / fullStatusWidth, 1);
-    }
-    display.setTextColor(statusColor);
-    display.drawString(status, kScreenInset, 200);
-    display.setTextSize(1);
-    display.setTextColor(kMuted);
-    const uint32_t address = meterWebAddress();
-    if (meterWifiSetupActive()) {
-        display.drawString("CoreS3-Setup  192.168.4.1", kScreenInset, 220);
-    } else if (address) {
-        const String network = meterWifiName() + "  " + IPAddress(address).toString();
-        const int available = right - kScreenInset;
-        const int width = display.textWidth(network);
-        if (width > available) {
-            display.setTextSize(static_cast<float>(available) / width, 1);
-        }
-        display.drawString(network, kScreenInset, 220);
-        display.setTextSize(1);
-    } else {
-        display.drawString("Wi-Fi connecting...", kScreenInset, 220);
-    }
-    display.endWrite();
-    if (bufferedDisplay) {
-        frame.pushSprite(0, 0);
-    }
-}
-
 void displayTask(void*)
 {
     flashLog.begin();
+    meterOtaFinishBoot(flashLog);
     sendDiagnostic("LOG storage state=%d count=%lu\n", static_cast<int>(flashLog.state),
                    static_cast<unsigned long>(flashLog.count));
     uint32_t nextRefresh = millis();
     uint32_t recordFromSecond = 1;  // Skip the partial startup window.
     for (;;) {
-        M5.update();
+        const auto input = BoardUi::poll();
         serviceSerialCommand();
         const uint32_t now = millis();
         if (confirmUntil && static_cast<int32_t>(now - confirmUntil) >= 0) {
             confirmUntil = 0;
             nextRefresh = now;
         }
-        const auto touch = M5.Touch.getDetail();
-        const int right = M5.Display.width() - kScreenInset;
-        const bool clearTouched = touch.wasPressed() &&
-            touch.x >= right - kClearWidth && touch.x < right &&
-            touch.y >= kClearTop && touch.y < kClearTop + kClearHeight;
         bool clearConfirmed = false;
-        if (M5.BtnPWR.wasHold()) {
+        if (input == BoardUi::Input::ResetWifi) {
             confirmUntil = 0;
-            meterRequestWifiReset();
+            if (!meterOtaBusy()) meterRequestWifiReset();
             nextRefresh = now;
-        } else if (clearTouched || M5.BtnPWR.wasClicked()) {
-            clearConfirmed = confirmUntil != 0;
-            confirmUntil = clearConfirmed ? 0 : now + 5000;
+        } else if (input == BoardUi::Input::NextRange) {
+            confirmUntil = 0;
+            if (!meterOtaBusy()) {
+                const uint8_t nextRange = (currentRangeIndex() + 1) % kCurrentRangeCount;
+                if (!saveCurrentRange(nextRange)) {
+                    sendDiagnostic("Range change failed\n");
+                }
+            }
             nextRefresh = now;
-        } else if (touch.wasPressed() && confirmUntil) {
+        } else if (input == BoardUi::Input::ConfirmUpdate) {
+            if (meterOtaConfirmButton()) {
+                confirmUntil = 0;
+                nextRefresh = now;
+            }
+        } else if (input == BoardUi::Input::Clear) {
+#if defined(METER_BOARD_STICKS3)
+            if (meterOtaBusy()) {
+#else
+            if (meterOtaConfirmButton() || meterOtaBusy()) {
+#endif
+                confirmUntil = 0;
+            } else {
+                clearConfirmed = confirmUntil != 0;
+                confirmUntil = clearConfirmed ? 0 : now + 5000;
+                if (!clearConfirmed) {
+                    BoardUi::playClearFeedback(false);
+                }
+            }
+            nextRefresh = now;
+        } else if (input == BoardUi::Input::Cancel && confirmUntil) {
             confirmUntil = 0;
             nextRefresh = now;
         }
@@ -292,6 +245,7 @@ void displayTask(void*)
         if (clearConfirmed || clearFromWeb) {
             const bool cleared = flashLog.clear();
             if (cleared) {
+                BoardUi::playClearFeedback(true);
                 recordFromSecond = uptimeSeconds() + 1;
                 sendDiagnostic("LOG clear count=%lu\n", static_cast<unsigned long>(flashLog.count));
             }
@@ -320,25 +274,50 @@ void displayTask(void*)
             continue;
         }
         nextRefresh = now + kDisplayUpdateMs;
+        if (!BoardConfig::hasRtc && !utcAtBoot.load()) {
+            captureClock();
+        }
 
         Reading reading;
         xQueuePeek(latestReading, &reading, 0);
-        const char* logIssue = flashLog.state == FlashLog::State::Full ? "FLASH FULL" :
-                               flashLog.state == FlashLog::State::Error ? "FLASH ERROR" : nullptr;
-        if (reading.status == MeterStatus::Live || reading.status == MeterStatus::RangeLimit) {
+        const uint8_t rangeIndex = currentRangeIndex();
+        const auto& range = kCurrentRanges[rangeIndex];
+        char averageCurrent[16] = "--";
+        char averageVoltage[16] = "--";
+        uint8_t storagePercent = 0;
+#if defined(METER_BOARD_STICKS3)
+        const LogTotals totals = flashLog.snapshotTotals();
+        storagePercent = totals.usagePercent;
+        if (totals.count) {
+            snprintf(averageCurrent, sizeof(averageCurrent), "%+.2f",
+                     range.displayValue(totals.microamps / totals.count));
+            snprintf(averageVoltage, sizeof(averageVoltage), "%.6f", totals.volts / totals.count);
+        }
+#endif
+        const char* logIssue = meterOtaScreenStatus();
+        if (!logIssue) {
+            logIssue = flashLog.state == FlashLog::State::Full ? "FLASH FULL" :
+                       flashLog.state == FlashLog::State::Error ? "FLASH ERROR" : nullptr;
+        }
+        if (reading.range == rangeIndex &&
+            (reading.status == MeterStatus::Live || reading.status == MeterStatus::RangeLimit)) {
             char voltage[16];
             char current[16];
             snprintf(voltage, sizeof(voltage), "%.3f", reading.volts);
-            snprintf(current, sizeof(current), "%+.2f", reading.microamps);
+            snprintf(current, sizeof(current), "%+.2f", range.displayValue(reading.microamps));
             const bool overRange = reading.status == MeterStatus::RangeLimit;
-            showReadings(voltage, current, logIssue ? logIssue :
-                         overRange ? "PORT B  /  Range limit" : "PORT B  /  LIVE",
-                         logIssue || overRange ? TFT_ORANGE : kCurrentColor);
+            BoardUi::render(voltage, current, range.unit(), logIssue ? logIssue :
+                            overRange ? BoardConfig::rangeStatus : BoardConfig::liveStatus,
+                            logIssue || overRange ? TFT_ORANGE : kCurrentColor,
+                            flashLog.count, !logIssue, confirmUntil != 0,
+                            averageCurrent, averageVoltage, storagePercent, range.id);
         } else {
             const bool failed = reading.status == MeterStatus::SensorError;
-            showReadings("--", "--", logIssue ? logIssue :
-                         failed ? "PORT B  /  Check INA226 cable" : "PORT B  /  Connecting...",
-                         logIssue || failed ? TFT_ORANGE : kMuted);
+            BoardUi::render("--", "--", range.unit(), logIssue ? logIssue :
+                            failed ? BoardConfig::sensorError : BoardConfig::connectingStatus,
+                            logIssue || failed ? TFT_ORANGE : kMuted,
+                            flashLog.count, !logIssue, confirmUntil != 0,
+                            averageCurrent, averageVoltage, storagePercent, range.id);
         }
         delay(15);
     }
@@ -368,6 +347,7 @@ bool meterLiveReading(float& microamps, float& volts)
 {
     Reading reading;
     if (xQueuePeek(latestReading, &reading, 0) != pdPASS ||
+        reading.range != currentRangeIndex() ||
         (reading.status != MeterStatus::Live && reading.status != MeterStatus::RangeLimit)) {
         return false;
     }
@@ -381,28 +361,28 @@ void setup()
     auto config = M5.config();
     config.internal_imu = false;
     config.internal_mic = false;
+#if defined(METER_BOARD_STICKS3)
+    config.internal_spk = true;
+#else
     config.internal_spk = false;
+#endif
+    config.internal_rtc = BoardConfig::hasRtc;
     M5.begin(config);
+#if defined(METER_BOARD_STICKS3)
+    M5.Power.setExtOutput(true);
+#endif
+    loadCurrentRange();
     setenv("TZ", "UTC0", 1);
     tzset();
-    if (M5.Rtc.isEnabled() && !M5.Rtc.getVoltLow()) {
+    if (BoardConfig::hasRtc && M5.Rtc.isEnabled() && !M5.Rtc.getVoltLow()) {
         M5.Rtc.setSystemTimeFromRtc();
-        const time_t utc = time(nullptr);
-        if (utc >= kEarliestUtc) {
-            utcAtBoot.store(static_cast<uint32_t>(utc) - uptimeSeconds());
-        }
+        captureClock();
     }
     Serial.begin(115200);
     // HWCDC decrements its retry counter when the USB host stops reading.
     // A zero timeout can underflow that counter when the TX buffer is full.
     Serial.setTxTimeoutMs(2);
-    M5.Display.setRotation(1);
-    if (M5.Display.width() < M5.Display.height()) {
-        M5.Display.setRotation(0);
-    }
-    M5.Display.setBrightness(160);
-    frame.setColorDepth(16);
-    bufferedDisplay = frame.createSprite(M5.Display.width(), M5.Display.height()) != nullptr;
+    BoardUi::begin();
 
     Wire.setTimeOut(25);
     latestReading = xQueueCreate(1, sizeof(Reading));
@@ -411,7 +391,8 @@ void setup()
     if (!latestReading || !pendingRecords || !serialMessages ||
         xTaskCreatePinnedToCore(serialTask, "meter-serial", 4096, nullptr, 1, nullptr, 0) != pdPASS ||
         xTaskCreatePinnedToCore(displayTask, "meter-display", 6144, nullptr, 1, nullptr, 0) != pdPASS) {
-        showReadings("--", "--", "Display task failed", TFT_ORANGE);
+        BoardUi::render("--", "--", kCurrentRanges[currentRangeIndex()].unit(),
+                        "Display task failed", TFT_ORANGE, 0, false, false);
         for (;;) {
             delay(1000);
         }
@@ -427,7 +408,7 @@ void loop()
     static bool i2cStarted = false;
     static bool sensorConfigured = false;
     if (!i2cStarted) {
-        i2cStarted = Wire.begin(kSda, kScl, 100000);
+        i2cStarted = Wire.begin(BoardConfig::sensorSda, BoardConfig::sensorScl, 100000);
     }
     if (!sensorConfigured) {
         sensorConfigured = i2cStarted && configureSensor();
@@ -464,11 +445,14 @@ void loop()
 
     Reading reading;
     reading.volts = busRaw * 0.00125f;
-    reading.microamps =
-        static_cast<int16_t>(shuntRaw) * kShuntMicrovoltsPerCount / kShuntOhms;
-    const bool overRange = busRaw > 24000 || shuntRaw == 0x7FFF || shuntRaw == 0x8000;
+    reading.range = currentRangeIndex();
+    const auto& range = kCurrentRanges[reading.range];
+    reading.microamps = range.microamps(static_cast<int16_t>(shuntRaw));
+    const bool overRange = busRaw > 24000 || shuntRaw == 0x7FFF || shuntRaw == 0x8000 ||
+                           fabsf(reading.microamps) > range.maxMicroamps;
     reading.status = overRange ? MeterStatus::RangeLimit : MeterStatus::Live;
     recordSample(&reading);
     xQueueOverwrite(latestReading, &reading);
-    sendDiagnostic("V=%.3f V  I=%+.2f uA\n", reading.volts, reading.microamps);
+    sendDiagnostic("V=%.3f V  I=%+.2f %s\n", reading.volts,
+                   range.displayValue(reading.microamps), range.unit());
 }
